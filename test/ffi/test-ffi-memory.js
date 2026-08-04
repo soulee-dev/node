@@ -17,6 +17,9 @@ const { lib, functions: symbols } = ffi.dlopen(libraryPath, {
 
 after(() => lib.close());
 
+const pointerSize =
+  process.arch === 'ia32' || process.arch === 'arm' ? 4 : 8;
+
 function withAllocations(fn) {
   const allocations = new Set();
 
@@ -74,6 +77,52 @@ test('ffi supports unaligned memory access', () => {
     assert.strictEqual(ffi.getInt32(ptr, 1), 0x12345678);
     assert.strictEqual(ffi.getUint16(ptr, 7), 0xBEEF);
     assert.strictEqual(ffi.getFloat64(ptr, 9), 6.5);
+  }));
+});
+
+test('ffi reads and writes native pointers', () => {
+  withAllocations(common.mustCall((alloc) => {
+    const ptr = alloc(64);
+    const target = alloc(16);
+
+    ffi.setPointer(ptr, 0, target);
+    assert.strictEqual(ffi.getPointer(ptr, 0), target);
+
+    // The offset argument is optional on the getter.
+    assert.strictEqual(ffi.getPointer(ptr), target);
+
+    // Null pointers round-trip.
+    ffi.setPointer(ptr, 16, 0n);
+    assert.strictEqual(ffi.getPointer(ptr, 16), 0n);
+
+    // Unaligned access works like the fixed-width helpers.
+    ffi.setPointer(ptr, 33, target);
+    assert.strictEqual(ffi.getPointer(ptr, 33), target);
+  }));
+});
+
+test('ffi pointer helpers use the platform pointer width', () => {
+  withAllocations(common.mustCall((alloc) => {
+    const ptr = alloc(32);
+    const target = alloc(16);
+
+    // Fill the region so that reading or writing the wrong number of bytes
+    // would be visible in the neighbouring bytes.
+    for (let i = 0; i < 32; i++) {
+      ffi.setUint8(ptr, i, 0xAA);
+    }
+
+    ffi.setPointer(ptr, 0, target);
+    assert.strictEqual(ffi.getPointer(ptr, 0), target);
+
+    // Bytes past a single pointer are left untouched.
+    assert.strictEqual(ffi.getUint8(ptr, pointerSize), 0xAA);
+
+    // The fixed-width helper matching this platform reads the same value.
+    const viaFixedWidth = pointerSize === 4 ?
+      BigInt(ffi.getUint32(ptr, 0)) :
+      ffi.getUint64(ptr, 0);
+    assert.strictEqual(viaFixedWidth, target);
   }));
 });
 
@@ -231,6 +280,19 @@ test('ffi validates memory access arguments', () => {
     assert.throws(() => ffi.setUint64(ptr, 0, -1n), /Value must be a uint64/);
     assert.throws(() => ffi.setUint64(ptr, 0, 2n ** 64n), /Value must be a uint64/);
     assert.throws(() => ffi.setUint64(ptr, 0, Number.MAX_SAFE_INTEGER + 1), /Value must be a uint64/);
+    assert.throws(() => ffi.getPointer(0n), /Cannot dereference a null pointer/);
+    assert.throws(() => ffi.getPointer(-1n), /The pointer must be a non-negative bigint/);
+    assert.throws(() => ffi.getPointer(maxPointer, 2), /accessed range exceeds the platform address range/);
+    assert.throws(() => ffi.setPointer(0n, 0, 0n), /Cannot dereference a null pointer/);
+    assert.throws(() => ffi.setPointer(ptr), /Expected an offset argument/);
+    assert.throws(() => ffi.setPointer(ptr, 0), /Expected a value argument/);
+    assert.throws(() => ffi.setPointer(ptr, 0, 1), /The value must be a bigint/);
+    assert.throws(() => ffi.setPointer(ptr, 0, -1n), /The value must be a non-negative bigint/);
+    assert.throws(() => ffi.setPointer(maxPointer, 2, 0n), /accessed range exceeds the platform address range/);
+    if (pointerSize === 4) {
+      assert.throws(() => ffi.setPointer(ptr, 0, 2n ** 32n),
+                    /The value exceeds the platform pointer range/);
+    }
     assert.throws(() => ffi.exportString(1, ptr, 4), { code: 'ERR_INVALID_ARG_TYPE' });
     assert.throws(() => ffi.exportString('ok', ptr, -1), { code: 'ERR_OUT_OF_RANGE' });
     assert.throws(() => ffi.exportString('ok', ptr, 4, 1), { code: 'ERR_INVALID_ARG_TYPE' });

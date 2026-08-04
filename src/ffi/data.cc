@@ -498,6 +498,76 @@ void SetFloat64(const FunctionCallbackInfo<Value>& args) {
   SetValue<double>(args);
 }
 
+// Pointer-width accessors. Unlike the fixed-width helpers above, these read
+// and write exactly `sizeof(void*)` bytes, so struct fields holding native
+// pointers are accessed correctly on both 32-bit and 64-bit targets. The
+// value is always exchanged with JavaScript as a bigint, matching how every
+// other pointer-shaped value in this module is represented.
+//
+// These are deliberately not `GetValue<uintptr_t>()` / `SetValue<uintptr_t>()`
+// instantiations: those templates dispatch on exact type identity, and
+// `uintptr_t` is not the same type as `uint64_t` on every 64-bit platform
+// (for example it is `unsigned long` on darwin while `uint64_t` is
+// `unsigned long long`), which would fall through to `UNREACHABLE()`.
+void GetPointer(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+  THROW_IF_INSUFFICIENT_PERMISSIONS(env, permission::PermissionScope::kFFI, "");
+  Isolate* isolate = env->isolate();
+  std::pair<uint8_t*, size_t> ptr_and_offset;
+
+  if (!GetValidatedPointerAndOffset(env, args).To(&ptr_and_offset)) {
+    return;
+  }
+
+  auto [ptr, offset] = ptr_and_offset;
+  uintptr_t raw_ptr = reinterpret_cast<uintptr_t>(ptr);
+  if (ValidatePointerSpan(
+          env,
+          raw_ptr,
+          offset,
+          sizeof(uintptr_t),
+          "The accessed range exceeds the platform address range")
+          .IsNothing()) {
+    return;
+  }
+
+  uintptr_t value;
+  std::memcpy(&value, ptr + offset, sizeof(value));
+  args.GetReturnValue().Set(
+      BigInt::NewFromUnsigned(isolate, static_cast<uint64_t>(value)));
+}
+
+void SetPointer(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+  THROW_IF_INSUFFICIENT_PERMISSIONS(env, permission::PermissionScope::kFFI, "");
+  PointerOffsetAndValue data;
+
+  if (!GetValidatedPointerOffsetAndValue(env, args).To(&data)) {
+    return;
+  }
+  auto [ptr, offset, value] = data;
+
+  uintptr_t raw_ptr = reinterpret_cast<uintptr_t>(ptr);
+  if (ValidatePointerSpan(
+          env,
+          raw_ptr,
+          offset,
+          sizeof(uintptr_t),
+          "The accessed range exceeds the platform address range")
+          .IsNothing()) {
+    return;
+  }
+
+  // Rejects values that do not fit in a native pointer, which is what keeps
+  // 32-bit targets from silently truncating a 64-bit bigint.
+  uintptr_t converted;
+  if (!GetValidatedPointerAddress(env, value, "value").To(&converted)) {
+    return;
+  }
+
+  std::memcpy(ptr + offset, &converted, sizeof(converted));
+}
+
 void ToString(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
   Isolate* isolate = env->isolate();

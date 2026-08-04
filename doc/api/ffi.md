@@ -506,6 +506,7 @@ optionally with a byte offset:
 * `ffi.getUint64(pointer[, offset])`
 * `ffi.getFloat32(pointer[, offset])`
 * `ffi.getFloat64(pointer[, offset])`
+* `ffi.getPointer(pointer[, offset])`
 * `ffi.setInt8(pointer, offset, value)`
 * `ffi.setUint8(pointer, offset, value)`
 * `ffi.setInt16(pointer, offset, value)`
@@ -516,6 +517,7 @@ optionally with a byte offset:
 * `ffi.setUint64(pointer, offset, value)`
 * `ffi.setFloat32(pointer, offset, value)`
 * `ffi.setFloat64(pointer, offset, value)`
+* `ffi.setPointer(pointer, offset, value)`
 
 These helpers perform direct memory reads and writes. `pointer` must be a
 `bigint` referring to valid readable or writable native memory. `offset`, when
@@ -538,6 +540,27 @@ const {
 
 setInt32(ptr, 0, 42);
 console.log(getInt32(ptr, 0));
+```
+
+`ffi.getPointer()` and `ffi.setPointer()` access a native pointer, reading and
+writing exactly as many bytes as a pointer occupies on the current platform.
+This is eight bytes on 64-bit targets and four bytes on 32-bit targets, so
+these helpers are the portable way to follow a pointer stored in native memory,
+such as a pointer field inside a struct. Using `getUint64()` for that purpose
+reads eight bytes unconditionally and therefore produces incorrect results on
+32-bit targets.
+
+Both helpers use `bigint` values regardless of the platform pointer width,
+which matches how pointers are represented everywhere else in this module.
+`ffi.setPointer()` throws if `value` does not fit in a native pointer.
+
+```cjs
+const { getPointer, toString } = require('node:ffi');
+
+// Given `struct { char* name; int32_t age; }`, read the `name` pointer and
+// then the string it refers to.
+const namePointer = getPointer(personPointer, 0);
+console.log(toString(namePointer));
 ```
 
 Like the other raw memory helpers in this module, these APIs do not track

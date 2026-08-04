@@ -1255,6 +1255,7 @@ static void Initialize(Local<Object> target,
   SetMethod(context, target, "getUint64", GetUint64);
   SetMethod(context, target, "getFloat32", GetFloat32);
   SetMethod(context, target, "getFloat64", GetFloat64);
+  SetMethod(context, target, "getPointer", GetPointer);
 
   SetMethod(context, target, "setInt8", SetInt8);
   SetMethod(context, target, "setUint8", SetUint8);
@@ -1266,6 +1267,7 @@ static void Initialize(Local<Object> target,
   SetMethod(context, target, "setUint64", SetUint64);
   SetMethod(context, target, "setFloat32", SetFloat32);
   SetMethod(context, target, "setFloat64", SetFloat64);
+  SetMethod(context, target, "setPointer", SetPointer);
 
   // ToFFIType maps `char` to sint8 or uint8 based on `CHAR_MIN < 0` at C++
   // build time. Exposing the same decision to JS lets the shared-buffer

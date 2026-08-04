@@ -95,6 +95,7 @@ test('ffi exports expected API surface', () => {
     'getInt32',
     'getInt64',
     'getInt8',
+    'getPointer',
     'getRawPointer',
     'getUint16',
     'getUint32',
@@ -106,6 +107,7 @@ test('ffi exports expected API surface', () => {
     'setInt32',
     'setInt64',
     'setInt8',
+    'setPointer',
     'setUint16',
     'setUint32',
     'setUint64',
@@ -137,6 +139,7 @@ test('ffi exports expected API surface', () => {
   assert.strictEqual(typeof ffi.getUint64, 'function');
   assert.strictEqual(typeof ffi.getFloat32, 'function');
   assert.strictEqual(typeof ffi.getFloat64, 'function');
+  assert.strictEqual(typeof ffi.getPointer, 'function');
   assert.strictEqual(typeof ffi.getCurrentEventLoop, 'function');
   assert.strictEqual(typeof ffi.setInt8, 'function');
   assert.strictEqual(typeof ffi.setUint8, 'function');
@@ -148,6 +151,7 @@ test('ffi exports expected API surface', () => {
   assert.strictEqual(typeof ffi.setUint64, 'function');
   assert.strictEqual(typeof ffi.setFloat32, 'function');
   assert.strictEqual(typeof ffi.setFloat64, 'function');
+  assert.strictEqual(typeof ffi.setPointer, 'function');
   assert.strictEqual(typeof ffi.toString, 'function');
   assert.strictEqual(typeof ffi.toBuffer, 'function');
   assert.strictEqual(typeof ffi.toArrayBuffer, 'function');

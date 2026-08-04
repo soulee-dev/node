@@ -161,6 +161,7 @@ void GetInt64(const v8::FunctionCallbackInfo<v8::Value>& args);
 void GetUint64(const v8::FunctionCallbackInfo<v8::Value>& args);
 void GetFloat32(const v8::FunctionCallbackInfo<v8::Value>& args);
 void GetFloat64(const v8::FunctionCallbackInfo<v8::Value>& args);
+void GetPointer(const v8::FunctionCallbackInfo<v8::Value>& args);
 
 void SetInt8(const v8::FunctionCallbackInfo<v8::Value>& args);
 void SetUint8(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -172,6 +173,7 @@ void SetInt64(const v8::FunctionCallbackInfo<v8::Value>& args);
 void SetUint64(const v8::FunctionCallbackInfo<v8::Value>& args);
 void SetFloat32(const v8::FunctionCallbackInfo<v8::Value>& args);
 void SetFloat64(const v8::FunctionCallbackInfo<v8::Value>& args);
+void SetPointer(const v8::FunctionCallbackInfo<v8::Value>& args);
 
 void ToString(const v8::FunctionCallbackInfo<v8::Value>& args);
 void ToBuffer(const v8::FunctionCallbackInfo<v8::Value>& args);
