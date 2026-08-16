@@ -533,10 +533,16 @@ The getter helpers return JavaScript `number` values for 8-, 16-, and 32-bit
 integer types and for floating-point types. They return `bigint` values for
 64-bit integer types.
 
-The setter helpers require an explicit byte offset and validate the supplied
-JavaScript value against the target native type before writing it into memory.
-For `setInt64()` and `setUint64()`, `bigint` values are accepted directly;
-numeric inputs must be integers within JavaScript's safe integer range.
+The setter helpers require an explicit byte offset. The integer setters
+validate the supplied JavaScript value against the target native type before
+writing it into memory. For `setInt64()` and `setUint64()`, `bigint` values are
+accepted directly; numeric inputs must be integers within JavaScript's safe
+integer range.
+
+`setFloat32()` and `setFloat64()` do not validate their value. The value is
+coerced to a number before it is written, so a non-numeric value such as `'1.5'`
+or `true` is converted instead of rejected, and a value that coerces to `NaN`,
+such as `{}`, writes `NaN` into memory.
 
 ```cjs
 const {
