@@ -83,6 +83,19 @@ Maybe<uintptr_t> GetValidatedPointerAddress(Environment* env,
   return Just(static_cast<uintptr_t>(address));
 }
 
+Maybe<bool> GetValidatedCopyFlag(Environment* env, Local<Value> value) {
+  if (value->IsUndefined()) {
+    return Just(true);
+  }
+
+  if (!value->IsBoolean()) {
+    THROW_ERR_INVALID_ARG_VALUE(env, "The copy must be a boolean");
+    return Nothing<bool>();
+  }
+
+  return Just(value->IsTrue());
+}
+
 Maybe<int64_t> GetValidatedSignedInt(Environment* env,
                                      Local<Value> value,
                                      int64_t min,
@@ -537,7 +550,6 @@ void ToString(const FunctionCallbackInfo<Value>& args) {
 
 void ToBuffer(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
-  Isolate* isolate = env->isolate();
 
   THROW_IF_INSUFFICIENT_PERMISSIONS(env, permission::PermissionScope::kFFI, "");
 
@@ -580,9 +592,13 @@ void ToBuffer(const FunctionCallbackInfo<Value>& args) {
     return;
   }
 
+  bool copy;
+  if (!GetValidatedCopyFlag(env, args[2]).To(&copy)) {
+    return;
+  }
+
   Local<Object> buf;
-  if (args.Length() < 3 || args[2]->IsUndefined() ||
-      args[2]->BooleanValue(isolate)) {
+  if (copy) {
     if (!Buffer::Copy(env, reinterpret_cast<char*>(ptr), len).ToLocal(&buf)) {
       return;
     }
@@ -642,10 +658,14 @@ void ToArrayBuffer(const FunctionCallbackInfo<Value>& args) {
     return;
   }
 
+  bool copy;
+  if (!GetValidatedCopyFlag(env, args[2]).To(&copy)) {
+    return;
+  }
+
   Local<ArrayBuffer> ab;
 
-  if (args.Length() < 3 || args[2]->IsUndefined() ||
-      args[2]->BooleanValue(isolate)) {
+  if (copy) {
     std::unique_ptr<BackingStore> store =
         ArrayBuffer::NewBackingStore(isolate, len);
     memcpy(store->Data(), reinterpret_cast<void*>(ptr), len);
