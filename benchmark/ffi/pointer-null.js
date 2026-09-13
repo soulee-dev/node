@@ -1,8 +1,8 @@
 'use strict';
 
 const common = require('../common.js');
-const ffi = require('node:ffi');
-const { libraryPath, ensureFixtureLibrary } = require('./common.js');
+const assert = require('node:assert');
+const { openFixture } = require('./_common.js');
 
 const bench = common.createBenchmark(main, {
   n: [1e7],
@@ -10,15 +10,12 @@ const bench = common.createBenchmark(main, {
   flags: ['--experimental-ffi'],
 });
 
-ensureFixtureLibrary();
-
-const { lib, functions } = ffi.dlopen(libraryPath, {
-  is_null_pointer: { return: 'u8', arguments: ['pointer'] },
-});
-
-const fn = functions.is_null_pointer;
-
 function main({ n }) {
+  const ffi = require('node:ffi');
+  const { lib, functions } = openFixture(ffi);
+  const fn = functions.is_null_pointer;
+  assert.strictEqual(fn(null), 1);
+
   bench.start();
   for (let i = 0; i < n; ++i)
     fn(null);

@@ -1,8 +1,8 @@
 'use strict';
 
 const common = require('../common.js');
-const ffi = require('node:ffi');
-const { libraryPath, ensureFixtureLibrary } = require('./common.js');
+const assert = require('node:assert');
+const { openFixture } = require('./_common.js');
 
 const bench = common.createBenchmark(main, {
   n: [1e7],
@@ -10,18 +10,15 @@ const bench = common.createBenchmark(main, {
   flags: ['--experimental-ffi'],
 });
 
-ensureFixtureLibrary();
-
-const { lib, functions } = ffi.dlopen(libraryPath, {
-  add_i64: { return: 'i64', arguments: ['i64', 'i64'] },
-});
-
-const add = functions.add_i64;
-
 function main({ n }) {
+  const ffi = require('node:ffi');
+  const { lib, functions } = openFixture(ffi);
+  const fn = functions.add_i64;
+  assert.strictEqual(fn(20n, 22n), 42n);
+
   bench.start();
   for (let i = 0; i < n; ++i)
-    add(20n, 22n);
+    fn(20n, 22n);
   bench.end(n);
 
   lib.close();

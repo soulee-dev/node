@@ -13,7 +13,7 @@ const bench = common.createBenchmark(main, {
 function main({ n }) {
   const ffi = require('node:ffi');
   const { lib, functions } = openFixture(ffi);
-  const fn = functions.add_u8;
+  const fn = functions.add_u32;
   assert.strictEqual(fn(20, 22), 42);
 
   bench.start();

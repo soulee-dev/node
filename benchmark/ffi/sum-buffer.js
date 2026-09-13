@@ -1,8 +1,8 @@
 'use strict';
 
 const common = require('../common.js');
-const ffi = require('node:ffi');
-const { libraryPath, ensureFixtureLibrary } = require('./common.js');
+const assert = require('node:assert');
+const { openFixture } = require('./_common.js');
 
 const bench = common.createBenchmark(main, {
   size: [64, 1024, 16384],
@@ -11,18 +11,14 @@ const bench = common.createBenchmark(main, {
   flags: ['--experimental-ffi'],
 });
 
-ensureFixtureLibrary();
-
-const { lib, functions } = ffi.dlopen(libraryPath, {
-  sum_buffer: { return: 'u64', arguments: ['pointer', 'u64'] },
-});
-
 function main({ n, size }) {
+  const ffi = require('node:ffi');
+  const { lib, functions } = openFixture(ffi);
+  const sum = functions.sum_buffer;
   const buf = Buffer.alloc(size, 0x42);
   const ptr = ffi.getRawPointer(buf);
   const len = BigInt(size);
-
-  const sum = functions.sum_buffer;
+  assert.strictEqual(sum(ptr, len), BigInt(size * 0x42));
 
   bench.start();
   for (let i = 0; i < n; ++i)

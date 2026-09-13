@@ -42,6 +42,21 @@ using v8::Value;
 
 namespace ffi {
 
+namespace {
+
+// Per-call scratch storage for the generic and shared-buffer invokers. Most
+// signatures have a handful of arguments, so their argument slots live on the
+// stack; wider signatures fall back to a heap allocation.
+constexpr size_t kInlineFFIArgs = 16;
+
+// Every supported return type fits in 8 bytes, but libffi widens small
+// integer returns to `ffi_arg`, which can be larger than 8 bytes on some
+// targets, so size the storage for whichever is bigger.
+constexpr size_t kFFIResultStorageSize =
+    sizeof(ffi_arg) > 8 ? sizeof(ffi_arg) : 8;
+
+}  // namespace
+
 void FFIFunctionInfo::MemoryInfo(MemoryTracker* tracker) const {
   tracker->TrackField("sb_backing", sb_backing);
 }
@@ -510,10 +525,15 @@ void DynamicLibrary::InvokeFunction(const FunctionCallbackInfo<Value>& args) {
     return;
   }
 
-  std::vector<uint64_t> values(expected_args, 0);
-  std::vector<void*> ffi_args(expected_args, nullptr);
+  MaybeStackBuffer<uint64_t, kInlineFFIArgs> values(expected_args);
+  MaybeStackBuffer<void*, kInlineFFIArgs> ffi_args(expected_args);
+  memset(values.out(), 0, expected_args * sizeof(uint64_t));
+  // String arguments are copied into NUL-terminated storage that has to stay
+  // alive until ffi_call() returns. The vector is reserved lazily so that
+  // signatures without string arguments never touch the heap here; once
+  // reserved, push_back() cannot reallocate and the c_str() pointers stored
+  // in `values` stay valid.
   std::vector<std::string> strings;
-  strings.reserve(expected_args);
 
   for (unsigned int i = 0; i < expected_args; i++) {
     FFIArgumentCategory res;
@@ -535,25 +555,26 @@ void DynamicLibrary::InvokeFunction(const FunctionCallbackInfo<Value>& args) {
         return;
       }
 
+      if (strings.capacity() == 0) strings.reserve(expected_args);
       strings.push_back(*str);
       values[i] = reinterpret_cast<uint64_t>(strings.back().c_str());
-      ffi_args[i] = &values[i];
-    } else {
-      ffi_args[i] = &values[i];
     }
+    ffi_args[i] = &values[i];
   }
 
+  alignas(8) uint8_t result_storage[kFFIResultStorageSize] = {0};
   void* result = nullptr;
 
   if (fn->return_type->type != FFI_TYPE_VOID) {
-    result = Malloc(GetFFIReturnValueStorageSize(fn->return_type));
+    CHECK_LE(GetFFIReturnValueStorageSize(fn->return_type),
+             sizeof(result_storage));
+    result = result_storage;
   }
 
-  ffi_call(&fn->cif, FFI_FN(fn->ptr), result, ffi_args.data());
+  ffi_call(&fn->cif, FFI_FN(fn->ptr), result, ffi_args.out());
 
   // Return result back to Javascript
   ToJSReturnValue(env, args, fn->return_type, result);
-  free(result);
 }
 
 void DynamicLibrary::InvokeFunctionSB(const FunctionCallbackInfo<Value>& args) {
@@ -591,8 +612,9 @@ void DynamicLibrary::InvokeFunctionSB(const FunctionCallbackInfo<Value>& args) {
 
   // Layout is 8 bytes per slot. The return value lives at offset 0 and
   // argument i lives at offset 8*(i+1).
-  std::vector<uint64_t> values(nargs, 0);
-  std::vector<void*> ffi_args(nargs, nullptr);
+  MaybeStackBuffer<uint64_t, kInlineFFIArgs> values(nargs);
+  MaybeStackBuffer<void*, kInlineFFIArgs> ffi_args(nargs);
+  memset(values.out(), 0, nargs * sizeof(uint64_t));
 
   for (unsigned int i = 0; i < nargs; i++) {
     ReadFFIArgFromBuffer(fn->args[i], buffer, 8 * (i + 1), &values[i]);
@@ -602,13 +624,11 @@ void DynamicLibrary::InvokeFunctionSB(const FunctionCallbackInfo<Value>& args) {
   // The storage must cover both the ffi_arg width that libffi uses for
   // promoted small integer returns and the 8 bytes needed for non-promoted
   // SB-eligible returns like f64, i64, and u64. `sizeof(ffi_arg)` is only
-  // 4 on 32-bit ARM, so take the max.
-  constexpr size_t kSBResultStorageSize =
-      sizeof(ffi_arg) > 8 ? sizeof(ffi_arg) : 8;
-  alignas(8) uint8_t result_storage[kSBResultStorageSize] = {0};
+  // 4 on 32-bit ARM, so kFFIResultStorageSize takes the max.
+  alignas(8) uint8_t result_storage[kFFIResultStorageSize] = {0};
   void* result = (fn->return_type != &ffi_type_void) ? result_storage : nullptr;
 
-  ffi_call(&fn->cif, FFI_FN(fn->ptr), result, ffi_args.data());
+  ffi_call(&fn->cif, FFI_FN(fn->ptr), result, ffi_args.out());
 
   if (result != nullptr) {
     WriteFFIReturnToBuffer(fn->return_type, result, buffer, 0);
@@ -1244,27 +1264,14 @@ static void Initialize(Local<Object> target,
   SetMethod(context, target, "getRawPointer", GetRawPointer);
   SetMethod(context, target, "getCurrentEventLoop", GetCurrentEventLoop);
 
-  SetMethod(context, target, "getInt8", GetInt8);
-  SetMethod(context, target, "getUint8", GetUint8);
-  SetMethod(context, target, "getInt16", GetInt16);
-  SetMethod(context, target, "getUint16", GetUint16);
-  SetMethod(context, target, "getInt32", GetInt32);
-  SetMethod(context, target, "getUint32", GetUint32);
-  SetMethod(context, target, "getInt64", GetInt64);
-  SetMethod(context, target, "getUint64", GetUint64);
-  SetMethod(context, target, "getFloat32", GetFloat32);
-  SetMethod(context, target, "getFloat64", GetFloat64);
-
-  SetMethod(context, target, "setInt8", SetInt8);
-  SetMethod(context, target, "setUint8", SetUint8);
-  SetMethod(context, target, "setInt16", SetInt16);
-  SetMethod(context, target, "setUint16", SetUint16);
-  SetMethod(context, target, "setInt32", SetInt32);
-  SetMethod(context, target, "setUint32", SetUint32);
-  SetMethod(context, target, "setInt64", SetInt64);
-  SetMethod(context, target, "setUint64", SetUint64);
-  SetMethod(context, target, "setFloat32", SetFloat32);
-  SetMethod(context, target, "setFloat64", SetFloat64);
+  // The memory helpers get V8 Fast API entrypoints (see src/ffi/data.cc);
+  // the FunctionCallback stays as the fallback for argument shapes the
+  // CFunction signature cannot describe.
+#define V(Name, name, Type)                                                    \
+  SetFastMethod(context, target, "get" #Name, Get##Name, &fast_get_##name);    \
+  SetFastMethod(context, target, "set" #Name, Set##Name, &fast_set_##name);
+  FFI_MEMORY_HELPER_TYPES(V)
+#undef V
 
   // ToFFIType maps `char` to sint8 or uint8 based on `CHAR_MIN < 0` at C++
   // build time. Exposing the same decision to JS lets the shared-buffer

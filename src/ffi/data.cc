@@ -2,8 +2,10 @@
 
 #include "data.h"
 #include "base_object-inl.h"
+#include "node_debug.h"
 #include "node_errors.h"
 #include "util.h"
+#include "v8-fast-api-calls.h"
 #include "v8.h"
 
 #include <cmath>
@@ -16,7 +18,10 @@ using v8::ArrayBuffer;
 using v8::ArrayBufferView;
 using v8::BackingStore;
 using v8::BigInt;
+using v8::CFunction;
+using v8::CFunctionInfo;
 using v8::Context;
+using v8::FastApiCallbackOptions;
 using v8::FunctionCallbackInfo;
 using v8::Integer;
 using v8::Isolate;
@@ -497,6 +502,202 @@ void SetFloat32(const FunctionCallbackInfo<Value>& args) {
 void SetFloat64(const FunctionCallbackInfo<Value>& args) {
   SetValue<double>(args);
 }
+
+// Fast API variants of the memory helpers.
+//
+// V8 calls these from optimized code whenever the JavaScript arguments match
+// the CFunction signature: a BigInt pointer, a Number offset and, for the
+// setters, a Number or (for 64-bit types) BigInt value. Every other argument
+// shape goes through the FunctionCallback versions above, so both paths check
+// the same conditions in the same order and throw the same errors.
+//
+// BigInt arguments arrive truncated to 64 bits. lib/ffi.js rejects negative
+// and oversized pointers, and out-of-range 64-bit setter values, before the
+// call so that optimized and unoptimized code behave the same way.
+
+namespace {
+
+// V8 has no 8/16-bit CFunction types; narrow integers travel as 32-bit.
+template <typename T>
+using FastReturnType = std::conditional_t<
+    std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> ||
+        std::is_same_v<T, int32_t>,
+    int32_t,
+    std::conditional_t<std::is_same_v<T, uint8_t> ||
+                           std::is_same_v<T, uint16_t> ||
+                           std::is_same_v<T, uint32_t>,
+                       uint32_t,
+                       T>>;
+
+// Setter values: 64-bit integers are BigInts, everything else is a Number
+// that is range-checked here exactly like GetValidatedSignedInt() and
+// GetValidatedUnsignedInt() do for the slow path.
+template <typename T>
+using FastSetValueType = std::conditional_t<
+    std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>, T, double>;
+
+template <typename T>
+constexpr const char* FastIntegerTypeName() {
+  if constexpr (std::is_same_v<T, int8_t>) return "int8";
+  if constexpr (std::is_same_v<T, uint8_t>) return "uint8";
+  if constexpr (std::is_same_v<T, int16_t>) return "int16";
+  if constexpr (std::is_same_v<T, uint16_t>) return "uint16";
+  if constexpr (std::is_same_v<T, int32_t>) return "int32";
+  if constexpr (std::is_same_v<T, uint32_t>) return "uint32";
+  return "";
+}
+
+// Mirrors GetValidatedPointerAndOffset() plus the sizeof(T) span check in
+// GetValue() / SetValue(). Returns false after throwing.
+bool ValidateFastAccess(Environment* env,
+                        uint64_t pointer,
+                        double offset_value,
+                        size_t width,
+                        uint8_t** out_ptr,
+                        size_t* out_offset) {
+  if (pointer > static_cast<uint64_t>(std::numeric_limits<uintptr_t>::max())) {
+    THROW_ERR_INVALID_ARG_VALUE(
+        env, "The pointer exceeds the platform pointer range");
+    return false;
+  }
+
+  uintptr_t raw_ptr = static_cast<uintptr_t>(pointer);
+  if (raw_ptr == 0) {
+    THROW_ERR_FFI_INVALID_POINTER(env, "Cannot dereference a null pointer");
+    return false;
+  }
+
+  if (!std::isfinite(offset_value) || offset_value < 0 ||
+      std::floor(offset_value) != offset_value) {
+    THROW_ERR_INVALID_ARG_VALUE(
+        env, "The offset must be a non-negative integer");
+    return false;
+  }
+
+  if (offset_value >
+      static_cast<double>(std::numeric_limits<size_t>::max())) {
+    THROW_ERR_OUT_OF_RANGE(env, "The offset is too large");
+    return false;
+  }
+
+  size_t offset = static_cast<size_t>(offset_value);
+  if (ValidatePointerSpan(
+          env,
+          raw_ptr,
+          offset,
+          1,
+          "The pointer and offset exceed the platform address range")
+          .IsNothing()) {
+    return false;
+  }
+
+  if (ValidatePointerSpan(
+          env,
+          raw_ptr,
+          offset,
+          width,
+          "The accessed range exceeds the platform address range")
+          .IsNothing()) {
+    return false;
+  }
+
+  *out_ptr = reinterpret_cast<uint8_t*>(raw_ptr);
+  *out_offset = offset;
+  return true;
+}
+
+template <typename T>
+FastReturnType<T> FastGetValue(Local<Value> receiver,
+                               uint64_t pointer,
+                               double offset_value,
+                               // NOLINTNEXTLINE(runtime/references)
+                               FastApiCallbackOptions& options) {
+  TRACK_V8_FAST_API_CALL("ffi.getValue");
+  Isolate* isolate = options.isolate;
+  HandleScope scope(isolate);
+  Environment* env = Environment::GetCurrent(isolate);
+  THROW_IF_INSUFFICIENT_PERMISSIONS(
+      env, permission::PermissionScope::kFFI, "", FastReturnType<T>());
+
+  uint8_t* ptr;
+  size_t offset;
+  if (!ValidateFastAccess(
+          env, pointer, offset_value, sizeof(T), &ptr, &offset)) {
+    return FastReturnType<T>();
+  }
+
+  T value;
+  std::memcpy(&value, ptr + offset, sizeof(value));
+  return static_cast<FastReturnType<T>>(value);
+}
+
+template <typename T>
+bool ConvertFastSetValue(Environment* env, FastSetValueType<T> raw, T* out) {
+  if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>) {
+    // Range-checked by lib/ffi.js before the call.
+    *out = raw;
+    return true;
+  } else if constexpr (std::is_floating_point_v<T>) {
+    *out = static_cast<T>(raw);
+    return true;
+  } else {
+    constexpr double min = static_cast<double>(std::numeric_limits<T>::min());
+    constexpr double max = static_cast<double>(std::numeric_limits<T>::max());
+    if (!std::isfinite(raw) || std::floor(raw) != raw || raw < min ||
+        raw > max) {
+      if constexpr (std::is_signed_v<T>) {
+        THROW_ERR_INVALID_ARG_VALUE(
+            env, "Value must be an %s", FastIntegerTypeName<T>());
+      } else {
+        THROW_ERR_INVALID_ARG_VALUE(
+            env, "Value must be a %s", FastIntegerTypeName<T>());
+      }
+      return false;
+    }
+    *out = static_cast<T>(raw);
+    return true;
+  }
+}
+
+template <typename T>
+void FastSetValue(Local<Value> receiver,
+                  uint64_t pointer,
+                  double offset_value,
+                  FastSetValueType<T> raw_value,
+                  // NOLINTNEXTLINE(runtime/references)
+                  FastApiCallbackOptions& options) {
+  TRACK_V8_FAST_API_CALL("ffi.setValue");
+  Isolate* isolate = options.isolate;
+  HandleScope scope(isolate);
+  Environment* env = Environment::GetCurrent(isolate);
+  THROW_IF_INSUFFICIENT_PERMISSIONS(env, permission::PermissionScope::kFFI, "");
+
+  uint8_t* ptr;
+  size_t offset;
+  if (!ValidateFastAccess(
+          env, pointer, offset_value, sizeof(T), &ptr, &offset)) {
+    return;
+  }
+
+  T converted;
+  if (!ConvertFastSetValue<T>(env, raw_value, &converted)) {
+    return;
+  }
+
+  std::memcpy(ptr + offset, &converted, sizeof(converted));
+}
+
+}  // namespace
+
+// kBigInt makes the 64-bit pointer parameter, and the 64-bit integer
+// return and value types, travel as BigInt rather than Number.
+#define V(Name, name, Type)                                                    \
+  const CFunction fast_get_##name = CFunction::Make(                           \
+      &FastGetValue<Type>, CFunctionInfo::Int64Representation::kBigInt);       \
+  const CFunction fast_set_##name = CFunction::Make(                           \
+      &FastSetValue<Type>, CFunctionInfo::Int64Representation::kBigInt);
+FFI_MEMORY_HELPER_TYPES(V)
+#undef V
 
 void ToString(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);

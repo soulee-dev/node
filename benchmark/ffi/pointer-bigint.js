@@ -1,8 +1,8 @@
 'use strict';
 
 const common = require('../common.js');
-const ffi = require('node:ffi');
-const { libraryPath, ensureFixtureLibrary } = require('./common.js');
+const assert = require('node:assert');
+const { openFixture } = require('./_common.js');
 
 const bench = common.createBenchmark(main, {
   n: [1e7],
@@ -10,15 +10,12 @@ const bench = common.createBenchmark(main, {
   flags: ['--experimental-ffi'],
 });
 
-ensureFixtureLibrary();
-
-const { lib, functions } = ffi.dlopen(libraryPath, {
-  pointer_to_usize: { return: 'u64', arguments: ['pointer'] },
-});
-
-const fn = functions.pointer_to_usize;
-
 function main({ n }) {
+  const ffi = require('node:ffi');
+  const { lib, functions } = openFixture(ffi);
+  const fn = functions.pointer_to_usize;
+  assert.strictEqual(fn(0xdeadbeefn), 0xdeadbeefn);
+
   bench.start();
   for (let i = 0; i < n; ++i)
     fn(0xdeadbeefn);

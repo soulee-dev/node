@@ -1466,7 +1466,7 @@ bench bench-all: bench-addons-build
 	$(warning Please use benchmark/run.js or benchmark/compare.js to run the benchmarks.)
 
 .PHONY: bench-addons-build
-bench-addons-build: | $(NODE_EXE) benchmark/napi/.buildstamp ## Build required addons for benchmark before running it.
+bench-addons-build: | $(NODE_EXE) benchmark/napi/.buildstamp test/ffi/.buildstamp ## Build required addons for benchmark before running it.
 
 .PHONY: bench-addons-clean
 .NOTPARALLEL: bench-addons-clean
