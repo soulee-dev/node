@@ -2,7 +2,7 @@
 
 const common = require('../common.js');
 const ffi = require('node:ffi');
-const { libraryPath, ensureFixtureLibrary } = require('./common.js');
+const { libraryPath, ensureFixtureLibrary } = require('./_common.js');
 
 const bench = common.createBenchmark(main, {
   n: [1e7],

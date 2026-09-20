@@ -11,7 +11,7 @@
 
 const common = require('../common.js');
 const { DynamicLibrary } = require('node:ffi');
-const { libraryPath, ensureFixtureLibrary } = require('./common.js');
+const { libraryPath, ensureFixtureLibrary } = require('./_common.js');
 
 const bench = common.createBenchmark(main, {
   signature: ['fast', 'slow'],

@@ -16,7 +16,7 @@ function ensureFixtureLibrary() {
   if (!fs.existsSync(libraryPath)) {
     throw new Error(
       `Missing FFI fixture library: ${libraryPath}. ` +
-      'Build it with `tools/test.py test/ffi/test-ffi-calls.js` first.',
+      'Build it with `make build-ffi-tests` first.',
     );
   }
 }

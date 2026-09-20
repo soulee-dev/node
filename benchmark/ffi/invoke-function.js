@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const common = require('../common.js');
-const { libraryPath, ensureFixtureLibrary } = require('./common.js');
+const { libraryPath, ensureFixtureLibrary } = require('./_common.js');
 
 // Measure the invocation (call) path for signatures that bypass V8 Fast API
 // and use libffi through FFIFunction::Invoke(). On x86-64 System V with
