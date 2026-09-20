@@ -1,79 +1,104 @@
 'use strict';
 
 const assert = require('node:assert');
+const { endianness } = require('node:os');
 const common = require('../common.js');
 const { libraryPath, ensureFixtureLibrary } = require('./common.js');
 
-// Measure the invocation (call) path for signatures that bypass V8 Fast API
-// and use libffi through FFIFunction::Invoke(). On x86-64 System V with
-// libffi >= 3.7, Invoke() reuses a precomputed call plan that avoids repeating
-// argument-placement work on every call. This benchmark quantifies the
-// per-call benefit.
-//
-// Signatures chosen to bypass both V8 Fast API and keep native work minimal:
-// - call_int_callback (null): 'function' type forces the generic path; null
-//   pointer triggers the early return in C so native computation is negligible.
-//   From libffi's perspective this is a register-only plan (2 pointer-sized
-//   args both fit in GP registers on x86-64 System V).
-// - sum_8_i32: 8 GP args exceed the x86-64 Fast API register cap (6), forcing
-//   the generic path. From libffi's perspective 6 args go in registers and 2
-//   spill to the stack, exercising a stack-spilled plan.
-
+// Exercise normal dispatch using call shapes that target different paths.
+// These are regression scenarios, not a same-signature comparison of invokers.
 const bench = common.createBenchmark(main, {
   n: [1e7],
-  symbol: ['call_int_callback', 'sum_8_i32'],
+  scenario: [
+    'fast-api-candidate',
+    'shared-buffer-function',
+    'shared-buffer-many-args',
+    'generic-buffer',
+  ],
 }, {
   flags: ['--no-warnings'],
 });
 
-ensureFixtureLibrary();
+function main({ n, scenario }) {
+  // SharedBuffer is disabled on big-endian hosts. Do not report generic calls
+  // under a SharedBuffer label there.
+  if (scenario.startsWith('shared-buffer-') && endianness() === 'BE') {
+    console.log(`Skipping: scenario=${scenario} requires a little-endian host`);
+    return;
+  }
 
-function main({ n, symbol }) {
-  const ffi = require('node:ffi');
+  ensureFixtureLibrary();
+  const { DynamicLibrary } = require('node:ffi');
+  const lib = new DynamicLibrary(libraryPath);
 
-  if (symbol === 'call_int_callback') {
-    // 'function' type bypasses Fast API (IsFastCallEligible rejects it).
-    // Pass 0n (null function pointer) so the native function returns -1
-    // immediately without invoking any callback, keeping per-call overhead
-    // dominated by the FFI call machinery itself.
-    const { lib, functions } = ffi.dlopen(libraryPath, {
-      call_int_callback: { return: 'i32', arguments: ['function', 'i32'] },
-    });
-
-    try {
-      // Verify the null-pointer early return.
-      assert.strictEqual(functions.call_int_callback(0n, 7), -1);
-
-      bench.start();
-      for (let i = 0; i < n; ++i)
-        functions.call_int_callback(0n, 21);
-      bench.end(n);
-    } finally {
-      lib.close();
+  try {
+    let run;
+    let expected;
+    if (scenario === 'fast-api-candidate') {
+      // Eligible on supported Fast API platforms. Actual routing still depends
+      // on executable memory availability and V8 optimization of the call site.
+      const fn = lib.getFunction('add_i32', {
+        return: 'i32', arguments: ['i32', 'i32'],
+      });
+      expected = 42;
+      run = (count) => {
+        let result;
+        for (let i = 0; i < count; ++i)
+          result = fn(20, 22);
+        return result;
+      };
+    } else if (scenario === 'shared-buffer-function') {
+      // 'function' excludes Fast API, but is pointer-shaped for SharedBuffer.
+      // A null BigInt takes the packing path and the C target returns early.
+      const fn = lib.getFunction('call_int_callback', {
+        return: 'i32', arguments: ['function', 'i32'],
+      });
+      expected = -1;
+      run = (count) => {
+        let result;
+        for (let i = 0; i < count; ++i)
+          result = fn(0n, 21);
+        return result;
+      };
+    } else if (scenario === 'shared-buffer-many-args') {
+      // Eight integer arguments exceed the current Fast API GP register caps.
+      // On x86-64 SysV, libffi passes six in registers and two on the stack.
+      const fn = lib.getFunction('sum_8_i32', {
+        return: 'i32', arguments: Array(8).fill('i32'),
+      });
+      expected = 42;
+      run = (count) => {
+        let result;
+        for (let i = 0; i < count; ++i)
+          result = fn(1, 2, 3, 4, 5, 6, 7, 14);
+        return result;
+      };
+    } else {
+      assert.strictEqual(scenario, 'generic-buffer');
+      // 'function' excludes Fast API. A Buffer pointer argument sends the
+      // SharedBuffer wrapper to InvokeFunction for native argument conversion.
+      // On big-endian hosts the generic invoker is selected directly instead.
+      // The null callback keeps native work minimal and never enters JS.
+      const fn = lib.getFunction('call_string_callback', {
+        return: 'void', arguments: ['function', 'pointer'],
+      });
+      const buffer = Buffer.from('hello\0');
+      run = (count) => {
+        for (let i = 0; i < count; ++i)
+          fn(0n, buffer);
+      };
     }
-  } else {
-    // 8 integer args exceed the x86-64 SysV GP register cap (6), which makes
-    // CreateFastFFIMetadata reject the signature. Calls go through the
-    // SharedBuffer or generic invoker into FFIFunction::Invoke().
-    const { lib, functions } = ffi.dlopen(libraryPath, {
-      sum_8_i32: {
-        return: 'i32',
-        arguments: [
-          'i32', 'i32', 'i32', 'i32',
-          'i32', 'i32', 'i32', 'i32',
-        ],
-      },
-    });
 
-    const fn = functions.sum_8_i32;
-
-    assert.strictEqual(fn(1, 2, 3, 4, 5, 6, 7, 8), 36);
+    // Warm the same fixed-arity call site outside the measured loop. This does
+    // not force or verify V8 optimization, especially in the Fast API candidate.
+    assert.strictEqual(run(1e4), expected);
 
     bench.start();
-    for (let i = 0; i < n; ++i)
-      fn(1, 2, 3, 4, 5, 6, 7, 14);
+    const result = run(n);
     bench.end(n);
 
+    assert.strictEqual(result, expected);
+  } finally {
     lib.close();
   }
 }
